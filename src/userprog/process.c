@@ -236,7 +236,7 @@ int process_wait(pid_t child_pid UNUSED) {
 }
 
 /* Free the current process's resources. */
-void process_exit(void) {
+void process_exit(int exit_code) {
   struct thread* cur = thread_current();
   uint32_t* pd;
 
@@ -269,7 +269,8 @@ void process_exit(void) {
   //struct process* pcb_to_free = cur->pcb;
   //cur->pcb = NULL;
   //free(pcb_to_free);
-
+  printf("%s: exit(%d)\n", thread_current()->pcb->process_name, exit_code);
+  thread_current()->pcb->exit_status = exit_code;
   sema_up(&cur->pcb->sema_wait);
   thread_exit();
 }

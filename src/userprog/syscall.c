@@ -12,6 +12,7 @@
 #include "filesys/inode.h"
 #include "devices/input.h"
 #include "kernel/stdio.h"
+#include "process.h"
 
 static struct semaphore file_lock;
 
@@ -34,7 +35,7 @@ static bool checkPointer(void* pointer, size_t len)
   return true;
 }
 
-#define CHECK(pointer, len) do {if (!checkPointer((void*)pointer, len)) {process_exit();} } while(0);
+#define CHECK(pointer, len) do {if (!checkPointer((void*)pointer, len)) {process_exit(-1);} } while(0);
 
 bool sys_create(const char* file_name, unsigned initial_size) {
   CHECK(file_name, 4); //TODO: check string
@@ -152,9 +153,8 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
 
   if (args[0] == SYS_EXIT) {
     f->eax = args[1];
-    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args[1]);
-    thread_current()->pcb->exit_status = args[1];
-    process_exit();
+    sema_up(&file_lock);
+    process_exit(args[1]);
   } else if (args[0] == SYS_PRACTICE) {
     f->eax = (int)args[1] + 1;
   } else if (args[0] == SYS_HALT) {
@@ -164,6 +164,7 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
     CHECK(args[1], 4); //TODO: check string
     f->eax = process_execute((char*)args[1]);
   } else if (args[0] == SYS_WAIT) {
+    sema_up(&file_lock);
     f->eax = process_wait(args[1]);
   } 
   

@@ -48,6 +48,7 @@ void userprog_init(void) {
     sema_init(&t->pcb->sema_mutex, 1);
     t->pcb->main_thread = t;
     strlcpy(t->pcb->process_name, t->name, sizeof t->name);
+    memset(t->pcb->fds, 0, sizeof (t->pcb->fds));
     t->pcb->waited = false;
     t->pcb->parent = NULL;
   }
@@ -137,6 +138,7 @@ static void start_process(void* file_name_) {
     list_init(&t->pcb->children);
     sema_init(&t->pcb->sema_wait, 0);
     sema_init(&t->pcb->sema_mutex, 1);
+    memset(t->pcb->fds, 0, sizeof (t->pcb->fds));
 
     // set parent
     t->pcb->parent = psd->parent;
@@ -689,3 +691,12 @@ void pthread_exit(void) {}
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
 void pthread_exit_main(void) {}
+
+int get_free_fd(struct process* process)
+{
+  for (size_t i = 3; i < MAX_OPEN_NR; i++) { // skip 0,1,2 due to the project requirement
+    if (process->fds[i].file == NULL)
+      return i;
+  }
+  return -1;
+}

@@ -375,6 +375,10 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   process_activate();
 
   /* Open executable file. */
+  char* pFirstSpace = strchr(file_name, ' ');
+  if (pFirstSpace)
+    *pFirstSpace = '\0';
+    
   file = filesys_open(file_name);
   if (file == NULL) {
     printf("load: %s: open failed\n", file_name);
@@ -444,6 +448,9 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
     goto done;
 
   /* Fill out argc & argv. the max lengh of arguments is 512*/
+  if (pFirstSpace)
+    *pFirstSpace = ' ';
+
   if (strlen(file_name) > 512)
     goto done;
 
@@ -455,6 +462,7 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   //2. fill out argc & argv
   char* token = NULL, *save_ptr = NULL;
   size_t argc = 0;
+  char** argv = NULL;
   
   //2.1 place NULL sentinal
   *esp = *esp - sizeof(void*);
@@ -468,15 +476,26 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   }
 
   // 2.3 Before place argumens, align the esp
+  argv = *esp;
   *esp = (void*)((size_t)*esp & 0xfffffffe); //TODO: if 64-bit?
 
   //2.4 place argv
-  memcpy(*esp - sizeof(void*), esp, sizeof(void*));
+  memcpy(*esp - sizeof(void*), &argv, sizeof(void*));
   *esp = *esp - sizeof(void*);
 
   //2.5 place argc
   *esp = *esp - sizeof(void*);
   memcpy(*esp, &argc, sizeof(size_t));
+
+  //2.6 reverse argv[]
+  char** argvEnd = argv + argc - 1;
+  while (argv < argvEnd) {
+    char* temp = *argv;
+    *argv = *argvEnd;
+    *argvEnd = temp;
+    argv++;
+    argvEnd--;
+  }
 
   *esp = *esp - sizeof(void*); // return address
 

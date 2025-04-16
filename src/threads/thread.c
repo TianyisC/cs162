@@ -425,7 +425,10 @@ static void init_thread(struct thread* t, const char* name, int priority) {
 
   memset(t, 0, sizeof *t);
   t->status = THREAD_BLOCKED;
+  char* pFirstSpace = strchr(name, ' ');
+  if (pFirstSpace) *pFirstSpace = '\0';
   strlcpy(t->name, name, sizeof t->name);
+  if (pFirstSpace) *pFirstSpace = ' ';
   t->stack = (uint8_t*)t + PGSIZE;
   t->priority = priority;
   t->pcb = NULL;

@@ -27,6 +27,16 @@ struct process {
   uint32_t* pagedir;          /* Page directory. */
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
+
+   struct process* parent;
+   int exit_status;
+   bool waited;
+   struct semaphore sema_wait;
+   struct semaphore sema_mutex;
+
+   struct list children;
+   struct list_elem children_node;
+
 };
 
 void userprog_init(void);

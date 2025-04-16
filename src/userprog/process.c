@@ -40,6 +40,17 @@ void userprog_init(void) {
      page directory) when t->pcb is assigned, because a timer interrupt
      can come at any time and activate our pagedir */
   t->pcb = calloc(sizeof(struct process), 1);
+  if (t->pcb) {
+    t->pcb->exit_status = -1;
+    list_init(&t->pcb->children);
+    t->pcb->children_node.prev = t->pcb->children_node.next = NULL;
+    sema_init(&t->pcb->sema_wait, 0);
+    sema_init(&t->pcb->sema_mutex, 1);
+    t->pcb->main_thread = t;
+    strlcpy(t->pcb->process_name, t->name, sizeof t->name);
+    t->pcb->waited = false;
+    t->pcb->parent = NULL;
+  }
   success = t->pcb != NULL;
 
   /* Kill the kernel if we did not succeed */
@@ -50,6 +61,15 @@ void userprog_init(void) {
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    process id, or TID_ERROR if the thread cannot be created. */
+
+ struct shared_data
+{
+  struct process* parent;
+  struct semaphore* psema_finish;
+  bool success; // if process create success
+};
+   
+
 pid_t process_execute(const char* file_name) {
   char* fn_copy;
   tid_t tid;
@@ -62,10 +82,25 @@ pid_t process_execute(const char* file_name) {
     return TID_ERROR;
   strlcpy(fn_copy, file_name, PGSIZE);
 
+  struct semaphore sema_finish;
+  sema_init(&sema_finish, 0);
+
+  struct shared_data sd = {
+    .parent = thread_current()->pcb,
+    .psema_finish = &sema_finish,
+    .success = 0
+  };
+  struct shared_data* psd = &sd;
+  memcpy(fn_copy + strlen(fn_copy) + 1, &psd, sizeof(void*));
+
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
+  
+  sema_down(&sema_finish);
+  if (sd.success != true)
+    return TID_ERROR;
   return tid;
 }
 
@@ -76,6 +111,9 @@ static void start_process(void* file_name_) {
   struct thread* t = thread_current();
   struct intr_frame if_;
   bool success, pcb_success;
+
+  struct shared_data* psd = NULL;
+  memcpy(&psd, file_name + strlen(file_name) + 1, sizeof(void*));
 
   /* Allocate process control block */
   struct process* new_pcb = malloc(sizeof(struct process));
@@ -91,6 +129,17 @@ static void start_process(void* file_name_) {
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
     strlcpy(t->pcb->process_name, t->name, sizeof t->name);
+
+    // continue initializing the PCB
+    t->pcb->exit_status = -1;
+    t->pcb->children_node.prev = t->pcb->children_node.next = NULL;
+    t->pcb->waited = false;
+    list_init(&t->pcb->children);
+    sema_init(&t->pcb->sema_wait, 0);
+    sema_init(&t->pcb->sema_mutex, 1);
+
+    // set parent
+    t->pcb->parent = psd->parent;
   }
 
   /* Initialize interrupt frame and load executable. */
@@ -107,17 +156,25 @@ static void start_process(void* file_name_) {
     // Avoid race where PCB is freed before t->pcb is set to NULL
     // If this happens, then an unfortuantely timed timer interrupt
     // can try to activate the pagedir, but it is now freed memory
-    struct process* pcb_to_free = t->pcb;
-    t->pcb = NULL;
-    free(pcb_to_free);
+    //struct process* pcb_to_free = t->pcb;
+    //t->pcb = NULL;
+    //free(pcb_to_free);
   }
 
   /* Clean up. Exit on failure or jump to userspace */
   palloc_free_page(file_name);
   if (!success) {
-    sema_up(&temporary);
+    sema_up(psd->psema_finish);
     thread_exit();
   }
+
+  // insert to parent.child
+  sema_down(&t->pcb->parent->sema_mutex);
+  list_push_back(&t->pcb->parent->children, &t->pcb->children_node);
+  sema_up(&t->pcb->parent->sema_mutex);
+
+  psd->success = true;
+  sema_up(psd->psema_finish); // notify the process create success
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -139,8 +196,41 @@ static void start_process(void* file_name_) {
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int process_wait(pid_t child_pid UNUSED) {
-  sema_down(&temporary);
-  return 0;
+  if (child_pid == TID_ERROR) return -1;
+
+  // get process structure of child
+  sema_down(&thread_current()->pcb->sema_mutex);
+  if (thread_current()->pcb->waited == true) {
+    sema_up(&thread_current()->pcb->sema_wait);
+    return -1; // another thread is waiting for.
+  }
+  struct process* child = NULL;
+  for (struct list_elem *ele = list_begin(&thread_current()->pcb->children);
+      ele != list_end(&thread_current()->pcb->children);
+      ele = list_next(ele)
+    ) 
+  {
+     struct process* temp = list_entry(ele, struct process, children_node);
+     if (get_pid(temp) == child_pid) {
+        child = temp;
+        thread_current()->pcb->waited = true;
+        break;
+     }
+  }
+  sema_up(&thread_current()->pcb->sema_mutex);
+
+  if (!child)
+    return -1; // TODO: distinguish with exit status
+
+  sema_down(&child->sema_wait);
+
+  // clean up for the child
+  sema_down(&thread_current()->pcb->sema_mutex);
+  list_remove(&child->children_node);
+  sema_up(&thread_current()->pcb->sema_mutex);
+  free(child);         // now we can free pcb.
+
+  return child->exit_status;
 }
 
 /* Free the current process's resources. */
@@ -174,11 +264,11 @@ void process_exit(void) {
      Avoid race where PCB is freed before t->pcb is set to NULL
      If this happens, then an unfortuantely timed timer interrupt
      can try to activate the pagedir, but it is now freed memory */
-  struct process* pcb_to_free = cur->pcb;
-  cur->pcb = NULL;
-  free(pcb_to_free);
+  //struct process* pcb_to_free = cur->pcb;
+  //cur->pcb = NULL;
+  //free(pcb_to_free);
 
-  sema_up(&temporary);
+  sema_up(&cur->pcb->sema_wait);
   thread_exit();
 }
 
@@ -350,6 +440,43 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   /* Set up stack. */
   if (!setup_stack(esp))
     goto done;
+
+  /* Fill out argc & argv. the max lengh of arguments is 512*/
+  if (strlen(file_name) > 512)
+    goto done;
+
+  // 1. copy arguments into user stack
+  *esp = (char*)*esp - strlen(file_name) - 1;
+  strlcpy(*esp, file_name, strlen(file_name) + 1);
+  char* file_nmae_user = *esp;
+
+  //2. fill out argc & argv
+  char* token = NULL, *save_ptr = NULL;
+  size_t argc = 0;
+  
+  //2.1 place NULL sentinal
+  *esp = *esp - sizeof(void*);
+  memset(*esp, 0, sizeof(void*));
+
+  //2.2 place argv[]
+  for (token = strtok_r(file_nmae_user, " ", &save_ptr); token != NULL; token = strtok_r (NULL, " ", &save_ptr)) {
+    argc += 1;
+    *esp = *esp - sizeof(void*);
+    memcpy(*esp, &token, sizeof(void*));
+  }
+
+  // 2.3 Before place argumens, align the esp
+  *esp = (void*)((size_t)*esp & 0xfffffffe); //TODO: if 64-bit?
+
+  //2.4 place argv
+  memcpy(*esp - sizeof(void*), esp, sizeof(void*));
+  *esp = *esp - sizeof(void*);
+
+  //2.5 place argc
+  *esp = *esp - sizeof(void*);
+  memcpy(*esp, &argc, sizeof(size_t));
+
+  *esp = *esp - sizeof(void*); // return address
 
   /* Start address. */
   *eip = (void (*)(void))ehdr.e_entry;

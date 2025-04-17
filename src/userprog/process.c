@@ -478,7 +478,8 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
 
   // 2.3 Before place argumens, align the esp
   argv = *esp;
-  *esp = (void*)((size_t)*esp & 0xfffffffe); //TODO: if 64-bit?
+  *esp = (void*)((size_t)*esp & 0xfffffff0); //TODO: if 64-bit?
+  *esp = *esp - 0x8;      // stack-align-0
 
   //2.4 place argv
   memcpy(*esp - sizeof(void*), &argv, sizeof(void*));
@@ -622,7 +623,7 @@ static bool setup_stack(void** esp) {
   if (kpage != NULL) {
     success = install_page(((uint8_t*)PHYS_BASE) - PGSIZE, kpage, true);
     if (success)
-      *esp = PHYS_BASE - 0x14;
+      *esp = PHYS_BASE;
     else
       palloc_free_page(kpage);
   }

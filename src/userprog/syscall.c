@@ -140,7 +140,7 @@ void sys_seek(int fd, unsigned position) {
 
 static void syscall_handler(struct intr_frame* f UNUSED) {
   uint32_t* args = ((uint32_t*)f->esp);
-  CHECK(args, 4); // TODO: check if esp points to user-stack
+  CHECK(args, 4); 
   /*
    * The following print statement, if uncommented, will print out the syscall
    * number whenever a process enters a system call. You might find it useful
@@ -152,41 +152,60 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
   sema_down(&file_lock);
 
   if (args[0] == SYS_EXIT) {
+    CHECK(&args[1], 4);
     f->eax = args[1];
     sema_up(&file_lock);
     process_exit(args[1]);
   } else if (args[0] == SYS_PRACTICE) {
+    CHECK(&args[1], 4);
     f->eax = (int)args[1] + 1;
   } else if (args[0] == SYS_HALT) {
     f->eax = 0;
     shutdown_power_off();
   } else if (args[0] == SYS_EXEC) {
+    CHECK(&args[1], 4);
     CHECK(args[1], 4); //TODO: check string
     f->eax = process_execute((char*)args[1]);
   } else if (args[0] == SYS_WAIT) {
     sema_up(&file_lock);
+    CHECK(&args[1], 4);
     f->eax = process_wait(args[1]);
   } 
   
   
 
   else if (args[0] == SYS_CREATE) {
+    CHECK(&args[1], 4);
+    CHECK(&args[2], 4);
     f->eax = sys_create((const char*)args[1], args[2]);
   } else if (args[0] == SYS_REMOVE) {
+    CHECK(&args[1], 4);
     f->eax = sys_remove((const char*)args[1]);
   } else if (args[0] == SYS_OPEN) {
+    CHECK(&args[1], 4);
     f->eax = sys_open((const char*)args[1]);
   } else if (args[0] == SYS_FILESIZE) {
+    CHECK(&args[1], 4);
     f->eax = sys_filesize(args[1]);
   } else if (args[0] == SYS_READ) {
+    CHECK(&args[1], 4);
+    CHECK(&args[2], 4);
+    CHECK(&args[3], 4);
     f->eax = sys_read(args[1], (char*)args[2], args[3]);
   } else if (args[0] == SYS_WRITE) {
+    CHECK(&args[1], 4);
+    CHECK(&args[2], 4);
+    CHECK(&args[3], 4);
     f->eax = sys_write(args[1], (char*)args[2], args[3]);
   } else if (args[0] == SYS_SEEK) {
+    CHECK(&args[1], 4);
+    CHECK(&args[2], 4);
     sys_seek(args[1], args[2]);
   } else if (args[0] == SYS_TELL) {
+    CHECK(&args[1], 4);
     f->eax = sys_tell(args[1]);
   } else if (args[0] == SYS_CLOSE) {
+    CHECK(&args[1], 4);
     sys_close(args[1]);
   } 
   sema_up(&file_lock);

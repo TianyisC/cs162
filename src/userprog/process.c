@@ -95,11 +95,11 @@ pid_t process_execute(const char* file_name) {
   memcpy(fn_copy + strlen(fn_copy) + 1, &psd, sizeof(void*));
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create(fn_copy, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
   
-  sema_down(&sema_finish);
+  sema_down(&sema_finish);  // wait for the start_process finished
   if (sd.success != true)
     return TID_ERROR;
   return tid;

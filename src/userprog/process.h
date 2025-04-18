@@ -9,6 +9,8 @@ struct file_descriptor {
    struct file* file;
    int cur_pos;
 };
+extern struct semaphore file_lock;
+
 
 // At most 8MB can be allocated to the stack
 // These defines will be used in Project 2: Multithreading
@@ -36,6 +38,7 @@ struct process {
 
    struct process* parent;
    int exit_status;
+   int pid;
    bool waited;
    struct semaphore sema_wait;
    struct semaphore sema_mutex;
@@ -43,6 +46,7 @@ struct process {
    struct list children;
    struct list_elem children_node;
 
+   struct file* executable;
    struct file_descriptor fds[MAX_OPEN_NR];
 };
 

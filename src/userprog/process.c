@@ -26,6 +26,8 @@ static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
 bool setup_thread(void (**eip)(void), void** esp);
 
+struct process* init_process;
+
 /* Initializes user programs in the system by ensuring the main
    thread has a minimal PCB so that it can execute and wait for
    the first user process. Any additions to the PCB should be also
@@ -51,9 +53,11 @@ void userprog_init(void) {
     memset(t->pcb->fds, 0, sizeof (t->pcb->fds));
     t->pcb->waited = false;
     t->pcb->parent = NULL;
+    t->pcb->executable = NULL;
+    t->pcb->pid = t->tid;
   }
   success = t->pcb != NULL;
-
+  init_process = t->pcb;
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
 }
@@ -142,6 +146,8 @@ static void start_process(void* file_name_) {
 
     // set parent
     t->pcb->parent = psd->parent;
+    t->pcb->executable = NULL;
+    t->pcb->pid = t->tid;
   }
 
   /* Initialize interrupt frame and load executable. */
@@ -158,9 +164,14 @@ static void start_process(void* file_name_) {
     // Avoid race where PCB is freed before t->pcb is set to NULL
     // If this happens, then an unfortuantely timed timer interrupt
     // can try to activate the pagedir, but it is now freed memory
-    //struct process* pcb_to_free = t->pcb;
-    //t->pcb = NULL;
-    //free(pcb_to_free);
+    struct process* pcb_to_free = t->pcb;
+    if (pcb_to_free->executable) {
+      sema_down(&file_lock);
+      file_close(pcb_to_free->executable);
+      sema_up(&file_lock);
+    }
+    t->pcb = NULL;
+    free(pcb_to_free);
   }
 
   /* Clean up. Exit on failure or jump to userspace */
@@ -202,10 +213,6 @@ int process_wait(pid_t child_pid UNUSED) {
 
   // get process structure of child
   sema_down(&thread_current()->pcb->sema_mutex);
-  if (thread_current()->pcb->waited == true) {
-    sema_up(&thread_current()->pcb->sema_wait);
-    return -1; // another thread is waiting for.
-  }
   struct process* child = NULL;
   for (struct list_elem *ele = list_begin(&thread_current()->pcb->children);
       ele != list_end(&thread_current()->pcb->children);
@@ -213,9 +220,8 @@ int process_wait(pid_t child_pid UNUSED) {
     ) 
   {
      struct process* temp = list_entry(ele, struct process, children_node);
-     if (get_pid(temp) == child_pid) {
+     if (temp->pid == child_pid) {
         child = temp;
-        thread_current()->pcb->waited = true;
         break;
      }
   }
@@ -224,15 +230,23 @@ int process_wait(pid_t child_pid UNUSED) {
   if (!child)
     return -1; // TODO: distinguish with exit status
 
-  sema_down(&child->sema_wait);
+  // if one of threads of current process is wating for child process, return -1
+  sema_down(&child->sema_mutex);
+  if (child->waited)
+    return -1;
+  else
+    child->waited = true;
+  sema_up(&child->sema_mutex);
 
+  sema_down(&child->sema_wait);
+  int ret = child->exit_status;
   // clean up for the child
   sema_down(&thread_current()->pcb->sema_mutex);
   list_remove(&child->children_node);
   sema_up(&thread_current()->pcb->sema_mutex);
-  free(child);         // now we can free pcb.
-
-  return child->exit_status;
+  // now we can free PCB
+  free(child);
+  return ret;
 }
 
 /* Free the current process's resources. */
@@ -262,16 +276,50 @@ void process_exit(int exit_code) {
     pagedir_destroy(pd);
   }
 
-  /* Free the PCB of this process and kill this thread
+
+  printf("%s: exit(%d)\n", thread_current()->pcb->process_name, exit_code);
+  thread_current()->pcb->exit_status = exit_code;
+
+  sema_down(&file_lock);
+  file_allow_write(cur->pcb->executable);
+  file_close(cur->pcb->executable);
+
+  for (size_t i = 0; i < MAX_OPEN_NR; i++) {
+    if (cur->pcb->fds[i].file) {
+      file_close(cur->pcb->fds[i].file);
+      cur->pcb->fds[i].file = NULL;
+    }
+  }
+  sema_up(&file_lock);
+
+  // adopt orphan processes
+  // set children's parent to the first procesGs 'main' (in linux, it's init process)
+  sema_down(&thread_current()->pcb->sema_mutex);
+  for (struct list_elem *ele = list_begin(&thread_current()->pcb->children);
+      ele != list_end(&thread_current()->pcb->children);
+      ele = list_next(ele)
+    ) 
+  {
+     struct process* child = list_entry(ele, struct process, children_node);
+     //TODO: race with other function that could modify parent. if using lock, maybe caused deadlock!!!
+     child->parent = init_process;
+  }
+  sema_up(&thread_current()->pcb->sema_mutex);
+
+      /* Free the PCB of this process and kill this thread
      Avoid race where PCB is freed before t->pcb is set to NULL
      If this happens, then an unfortuantely timed timer interrupt
      can try to activate the pagedir, but it is now freed memory */
-  //struct process* pcb_to_free = cur->pcb;
-  //cur->pcb = NULL;
-  //free(pcb_to_free);
-  printf("%s: exit(%d)\n", thread_current()->pcb->process_name, exit_code);
-  thread_current()->pcb->exit_status = exit_code;
-  sema_up(&cur->pcb->sema_wait);
+  // free PCB if current process is orphan process
+  if (get_pid(cur->pcb) > 3 && cur->pcb->parent == init_process) {  //TODO: make it safe while other thread is writing into 'parent'
+    struct process* pcb_to_free = cur->pcb;
+    cur->pcb = NULL;
+    free(pcb_to_free);
+  }
+
+  struct process* cur_proc = cur->pcb;
+  cur->pcb = NULL;
+  sema_up(&cur_proc->sema_wait);
   thread_exit();
 }
 
@@ -379,7 +427,8 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   char* pFirstSpace = strchr(file_name, ' ');
   if (pFirstSpace)
     *pFirstSpace = '\0';
-    
+  
+  sema_down(&file_lock);
   file = filesys_open(file_name);
   if (file == NULL) {
     printf("load: %s: open failed\n", file_name);
@@ -449,6 +498,12 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
     goto done;
 
   /* Fill out argc & argv. the max lengh of arguments is 512*/
+  thread_current()->pcb->executable = filesys_open(file_name);
+  if (!thread_current()->pcb->executable)
+    goto done;
+  file_deny_write(thread_current()->pcb->executable);
+
+
   if (pFirstSpace)
     *pFirstSpace = ' ';
 
@@ -509,6 +564,7 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
 done:
   /* We arrive here whether the load is successful or not. */
   file_close(file);
+  sema_up(&file_lock);
   return success;
 }
 
